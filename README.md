@@ -82,7 +82,7 @@
 ## Download & Install
 
 ### Prebuilt Release Binaries (GitHub Releases & Actions)
-Every tagged release (`v*`) and CI run produces **R8-optimized, resource-shrunk Release builds** with `SHA256SUMS.txt` verification checksums:
+Every push to `main` (and any `v*` tag or manual **Run workflow** dispatch) automatically runs unit tests, builds **R8-optimized, resource-shrunk Release binaries**, and publishes them to **GitHub Releases** with `SHA256SUMS.txt` checksums:
 
 | Artifact | Best For |
 | :--- | :--- |
@@ -92,16 +92,48 @@ Every tagged release (`v*`) and CI run produces **R8-optimized, resource-shrunk 
 | `ilay-for-x-*-universal.apk` | Single APK compatible with all CPU architectures |
 | `ilay-for-x-*.aab` | Android App Bundle for Google Play distribution |
 
-- **Stable Releases**: Grab the right APK for your device from the **Releases** page whenever a `v*` tag is published.
-- **Latest CI Builds**: Open the **Actions** tab, select the latest green **Android Release CI** run, and download the `ilay-for-x-release-artifacts` bundle.
+- **Automatic Releases on `main`**: Pushing a commit to `main` automatically publishes a new Release tagged `v<versionName>.<run_number>` (e.g., `v1.0.5`) with auto-generated release notes.
+- **Custom Version Releases**: Either push a git tag (`git tag v1.1.0 && git push origin v1.1.0`) or click **Actions → Android Release CI → Run workflow** and enter a custom `release_tag`.
+- **Pull Request Artifacts**: Open the **Actions** tab on any PR run to download `ilay-for-x-release-artifacts` without publishing a public Release.
 
-### Permanent Release Signing in GitHub Actions
-To ensure every published APK and AAB uses your permanent signing key (allowing seamless in-place updates without reinstalling), add these 3 repository secrets under **Settings → Secrets and variables → Actions**:
-- `RELEASE_KEYSTORE_BASE64`: Base64-encoded `.jks`/`.p12` keystore containing key alias `upload`
-- `STORE_PASSWORD`: Keystore password
-- `KEY_PASSWORD`: `upload` key password
+### Setting Up Your Permanent Release Keystore (Linux)
+To sign every release with the same key (so users can install updates in place without uninstalling), generate a permanent upload keystore once on Linux and store it in GitHub Secrets:
 
-*(Until these secrets are configured, GitHub Actions automatically generates an ephemeral signing key per run so CI builds still succeed.)*
+#### 1. Generate the PKCS12 keystore (`alias: upload`)
+```bash
+keytool -genkeypair -v \
+  -keystore my-upload-key.jks \
+  -storetype PKCS12 \
+  -alias upload \
+  -keyalg RSA \
+  -keysize 2048 \
+  -validity 10000 \
+  -dname "CN=Ilay for X, O=Ilay for X, C=US"
+```
+Choose a strong password when prompted (for PKCS12, your keystore password and key password are the same).
+
+> **Keep `my-upload-key.jks` safe and private!** Back it up in a password manager or encrypted offline drive, and **never commit it to Git** (`*.jks` is already gitignored).
+
+#### 2. Base64-encode as a single line
+```bash
+base64 -w 0 my-upload-key.jks > keystore.b64
+cat keystore.b64
+```
+Copy the entire single-line output (with no extra spaces or newlines), then delete the temporary text file:
+```bash
+rm -f keystore.b64
+```
+
+#### 3. Add the 3 GitHub Actions Secrets
+In your GitHub repository, open **Settings → Secrets and variables → Actions → New repository secret** and add:
+
+| Secret Name | Value |
+| :--- | :--- |
+| `RELEASE_KEYSTORE_BASE64` | Single-line base64 string from Step 2 |
+| `STORE_PASSWORD` | Password you chose in Step 1 |
+| `KEY_PASSWORD` | Same password you chose in Step 1 (PKCS12) |
+
+*(Until these 3 secrets are added, GitHub Actions signs builds with an ephemeral temporary keystore so CI still passes, and displays a warning in the workflow summary.)*
 
 ---
 
