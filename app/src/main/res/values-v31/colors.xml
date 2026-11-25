@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Live Android 12+ Monet / Material You palette mapped directly to the adaptive icon layers -->
+    <!-- Primary (system_accent1) -> Vector X (lit front bar + shaded back bar) -->
+    <color name="icon_x_primary_light">@android:color/system_accent1_500</color>
+    <color name="icon_x_primary_dark">@android:color/system_accent1_700</color>
+
+    <!-- Secondary (system_accent2) -> Tilted orbital ring (lit front arc + shaded back arc) -->
+    <color name="icon_ring_secondary_light">@android:color/system_accent2_500</color>
+    <color name="icon_ring_secondary_dark">@android:color/system_accent2_800</color>
+
+    <!-- Tertiary (system_accent3) -> Orbiting atom sphere (body + lit face + specular highlight) -->
+    <color name="icon_atom_tertiary_body">@android:color/system_accent3_600</color>
+    <color name="icon_atom_tertiary_light">@android:color/system_accent3_400</color>
+    <color name="icon_atom_tertiary_highlight">@android:color/system_accent3_100</color>
+</resources>

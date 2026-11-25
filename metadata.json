@@ -1,0 +1,6 @@
+{
+  "name": "Ilay for X",
+  "description": "Privacy-first, ad-free Material 3 Expressive Android client for X with AMOLED dark mode, on-device For You ranking, and configurable Nitter fallback.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <group
+        android:pivotX="54"
+        android:pivotY="54"
+        android:scaleX="0.75"
+        android:scaleY="0.75">
+
+        <!-- Monochrome themed icon silhouette matching the vector X + tilted orbital ring + atom -->
+        <path
+            android:pathData="M34.0,74.0 L74.0,34.0"
+            android:strokeColor="#FFFFFF"
+            android:strokeLineCap="round"
+            android:strokeWidth="9.0" />
+
+        <path
+            android:pathData="M34.0,34.0 L74.0,74.0"
+            android:strokeColor="#FFFFFF"
+            android:strokeLineCap="round"
+            android:strokeWidth="9.0" />
+
+        <!-- Tilted orbital ring with clean subtle gap around the orbiting atom -->
+        <group
+            android:pivotX="54"
+            android:pivotY="54"
+            android:rotation="-27">
+            <path
+                android:pathData="M25.2,54 A28.8,10.8 0 0,1 82.8,54"
+                android:strokeColor="#FFFFFF"
+                android:strokeLineCap="round"
+                android:strokeWidth="3.2" />
+            <path
+                android:pathData="M25.2,54 A28.8,10.8 0 0,0 70.6,62.9"
+                android:strokeColor="#FFFFFF"
+                android:strokeLineCap="round"
+                android:strokeWidth="3.8" />
+            <path
+                android:pathData="M80.4,58.4 A28.8,10.8 0 0,0 82.8,54"
+                android:strokeColor="#FFFFFF"
+                android:strokeLineCap="round"
+                android:strokeWidth="3.8" />
+        </group>
+
+        <!-- Orbiting atom sphere -->
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M76.35,46.42 A4.3,4.3 0 1,0 76.35,55.02 A4.3,4.3 0 1,0 76.35,46.42 Z" />
+    </group>
+</vector>

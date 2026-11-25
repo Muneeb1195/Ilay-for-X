@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Fallback adaptive icon palette for API 24-30 (overridden by live Monet system_accent* in values-v31) -->
+    <color name="icon_x_primary_light">#2979FF</color>
+    <color name="icon_x_primary_dark">#164185</color>
+
+    <color name="icon_ring_secondary_light">#328EA8</color>
+    <color name="icon_ring_secondary_dark">#164959</color>
+
+    <color name="icon_atom_tertiary_body">#6E4AD8</color>
+    <color name="icon_atom_tertiary_light">#9677F2</color>
+    <color name="icon_atom_tertiary_highlight">#EAE2FF</color>
+</resources>
