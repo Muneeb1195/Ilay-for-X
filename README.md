@@ -81,9 +81,27 @@
 
 ## Download & Install
 
-### Prebuilt APKs (GitHub Actions & Releases)
-- **Stable Releases**: Download the latest APK directly from the **Releases** page whenever a `v*` tag is published.
-- **Latest CI Builds**: Open the **Actions** tab, select the latest green **Android CI & APK Build** workflow run, and download the `ilay-for-x-debug-apk` artifact.
+### Prebuilt Release Binaries (GitHub Releases & Actions)
+Every tagged release (`v*`) and CI run produces **R8-optimized, resource-shrunk Release builds** with `SHA256SUMS.txt` verification checksums:
+
+| Artifact | Best For |
+| :--- | :--- |
+| `ilay-for-x-*-arm64-v8a.apk` | Most modern 64-bit Android phones & tablets *(recommended)* |
+| `ilay-for-x-*-armeabi-v7a.apk` | Older 32-bit ARM Android devices |
+| `ilay-for-x-*-x86_64.apk` | 64-bit Android emulators, Chromebooks, & x86 tablets |
+| `ilay-for-x-*-universal.apk` | Single APK compatible with all CPU architectures |
+| `ilay-for-x-*.aab` | Android App Bundle for Google Play distribution |
+
+- **Stable Releases**: Grab the right APK for your device from the **Releases** page whenever a `v*` tag is published.
+- **Latest CI Builds**: Open the **Actions** tab, select the latest green **Android Release CI** run, and download the `ilay-for-x-release-artifacts` bundle.
+
+### Permanent Release Signing in GitHub Actions
+To ensure every published APK and AAB uses your permanent signing key (allowing seamless in-place updates without reinstalling), add these 3 repository secrets under **Settings → Secrets and variables → Actions**:
+- `RELEASE_KEYSTORE_BASE64`: Base64-encoded `.jks`/`.p12` keystore containing key alias `upload`
+- `STORE_PASSWORD`: Keystore password
+- `KEY_PASSWORD`: `upload` key password
+
+*(Until these secrets are configured, GitHub Actions automatically generates an ephemeral signing key per run so CI builds still succeed.)*
 
 ---
 
@@ -100,32 +118,30 @@ git clone https://github.com/<your-username>/ilay-for-x.git
 cd ilay-for-x
 ```
 
-### 2. Prepare the debug signing keystore
-The debug build expects a `debug.keystore` file at the repository root (gitignored by default). Generate one or decode the provided base64 debug keystore:
-```bash
-base64 -d debug.keystore.base64 > debug.keystore
-```
-*(Or generate your own with `keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"`.)*
-
-### 3. Run unit tests
+### 2. Run unit tests
 ```bash
 gradle :app:testDebugUnitTest
 ```
 
-### 4. Build the Debug APK
-```bash
-gradle :app:assembleDebug
-```
-The built APK will be output to:
-`app/build/outputs/apk/debug/app-debug.apk`
-
-### Building a Signed Release APK
-Provide signing environment variables for `release` builds:
+### 3. Build R8-Optimized Release APKs & App Bundle
+Provide your signing environment variables (key alias `upload`):
 ```bash
 export KEYSTORE_PATH="/path/to/my-upload-key.jks"
 export STORE_PASSWORD="your-store-password"
 export KEY_PASSWORD="your-key-password"
-gradle :app:assembleRelease
+
+# Multi-ABI (arm64-v8a, armeabi-v7a, x86_64) + universal APKs
+gradle :app:assembleRelease -PenableAbiSplits=true
+
+# Android App Bundle (.aab)
+gradle :app:bundleRelease
+```
+
+### 4. Local Debug Build (Development)
+Decode or generate the gitignored `debug.keystore`, then assemble:
+```bash
+base64 -d debug.keystore.base64 > debug.keystore
+gradle :app:assembleDebug
 ```
 
 ---
