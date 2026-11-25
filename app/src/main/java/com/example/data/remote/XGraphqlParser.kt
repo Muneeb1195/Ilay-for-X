@@ -151,7 +151,7 @@ object XGraphqlParser {
                     continue
                 }
 
-                // Module items (conversation threads, replies & search modules inside timeline)
+                // Module items (conversation threads, profile replies & search modules inside timeline)
                 val moduleItems = content.optJSONArray("items")
                 if (moduleItems != null) {
                     for (k in 0 until moduleItems.length()) {
@@ -159,6 +159,7 @@ object XGraphqlParser {
                         val modEntryId = modEntry.optString("entryId")
                         val modItemWrapper = modEntry.optJSONObject("item")
                         val modItemContent = modItemWrapper?.optJSONObject("itemContent")
+                            ?: modEntry.optJSONObject("itemContent")
                         val modItem = modItemContent
                             ?.optJSONObject("tweet_results")
                             ?.optJSONObject("result")
@@ -490,15 +491,24 @@ object XGraphqlParser {
 
     /**
      * Parses X's native long-form Article payload (`tweet.article.article_results.result`)
-     * including cover image, preview text, plain text, publication timestamp, and Draft.js
-     * `content_state.blocks` for native in-app reading.
+     * including cover image, preview text, plain text, publication timestamp, Draft.js
+     * `content_state.blocks`, and inline `atomic` media blocks resolved via `entityMap` + `media_entities`.
      */
     private fun parseArticle(unwrapped: JSONObject, tweetId: String, authorHandle: String): XArticle? {
-        val result = unwrapped.optJSONObject("article")
-            ?.optJSONObject("article_results")
+        val articleRoot = unwrapped.optJSONObject("article") ?: return null
+        val result = articleRoot
+            .optJSONObject("article_results")
             ?.optJSONObject("result")
-            ?: return null
+            ?: articleRoot
+        return parseArticleNode(result, tweetId, authorHandle)
+    }
 
+    /**
+     * Parses an X Article node from either X GraphQL (`article.article_results.result`)
+     * or FxTwitter (`tweet.article`) JSON, preserving headings, prose, blockquotes, lists,
+     * code blocks, dividers, and inline embedded media figures.
+     */
+    fun parseArticleNode(result: JSONObject, tweetId: String, authorHandle: String): XArticle? {
         val restId = result.optString("rest_id").ifBlank { result.optString("id") }.ifBlank { tweetId }
         val title = result.optString("title").trim()
         val previewText = result.optString("preview_text").trim()
@@ -513,21 +523,162 @@ object XGraphqlParser {
                     ?.optString("media_url_https")
                     .orEmpty()
             }
+            .ifBlank {
+                result.optJSONObject("cover_media")
+                    ?.optString("url")
+                    .orEmpty()
+            }
 
         val publishedSecs = result.optJSONObject("metadata")
             ?.optLong("first_published_at_secs", 0L)
             ?: 0L
-        val publishedAtMs = if (publishedSecs > 0L) publishedSecs * 1000L else 0L
+        val publishedAtMs = when {
+            publishedSecs > 0L -> publishedSecs * 1000L
+            result.optString("created_at").isNotBlank() -> parseTwitterDate(result.optString("created_at"))
+            else -> 0L
+        }
+
+        // Index media_entities by media_id so atomic Draft.js MEDIA blocks resolve inline image URLs
+        val mediaById = LinkedHashMap<String, String>()
+        val mediaEntities = result.optJSONArray("media_entities")
+        if (mediaEntities != null) {
+            for (i in 0 until mediaEntities.length()) {
+                val ent = mediaEntities.optJSONObject(i) ?: continue
+                val mId = ent.optString("media_id").ifBlank { ent.optString("id") }.trim()
+                val mUrl = ent.optJSONObject("media_info")?.optString("original_img_url").orEmpty()
+                    .ifBlank { ent.optJSONObject("media_info")?.optString("media_url_https").orEmpty() }
+                    .ifBlank { ent.optString("media_url_https") }
+                    .ifBlank { ent.optString("url") }
+                    .trim()
+                if (mId.isNotBlank() && mUrl.isNotBlank()) {
+                    mediaById[mId] = mUrl
+                }
+            }
+        }
+
+        // Support both X GraphQL (`content_state`) and FxTwitter (`content`) Draft.js containers
+        val contentState = result.optJSONObject("content_state")
+            ?: result.optJSONObject("content")
+
+        // Index entityMap (can be either JSONObject keyed by "0","1"... or JSONArray of {key, value})
+        val entityByKey = HashMap<String, JSONObject>()
+        val entityMapObj = contentState?.optJSONObject("entityMap")
+        if (entityMapObj != null) {
+            val keys = entityMapObj.keys()
+            while (keys.hasNext()) {
+                val k = keys.next()
+                entityMapObj.optJSONObject(k)?.let { entityByKey[k] = it }
+            }
+        } else {
+            val entityMapArr = contentState?.optJSONArray("entityMap")
+            if (entityMapArr != null) {
+                for (i in 0 until entityMapArr.length()) {
+                    val entry = entityMapArr.optJSONObject(i) ?: continue
+                    val k = entry.optString("key").ifBlank { i.toString() }
+                    val v = entry.optJSONObject("value") ?: entry
+                    entityByKey[k] = v
+                }
+            }
+        }
 
         val blocks = mutableListOf<ArticleBlock>()
-        val rawBlocks = result.optJSONObject("content_state")?.optJSONArray("blocks")
+        val rawBlocks = contentState?.optJSONArray("blocks")
         if (rawBlocks != null) {
             for (i in 0 until rawBlocks.length()) {
                 val b = rawBlocks.optJSONObject(i) ?: continue
-                val text = b.optString("text").trim()
-                if (text.isBlank()) continue
                 val type = b.optString("type").ifBlank { "unstyled" }
-                blocks.add(ArticleBlock(type = type, text = text))
+                val text = b.optString("text").trim()
+
+                if (type.equals("atomic", ignoreCase = true)) {
+                    val entityRanges = b.optJSONArray("entityRanges")
+                    var addedAtomic = false
+                    if (entityRanges != null) {
+                        for (r in 0 until entityRanges.length()) {
+                            val key = entityRanges.optJSONObject(r)?.opt("key")?.toString() ?: continue
+                            val entity = entityByKey[key] ?: continue
+                            val entType = entity.optString("type").uppercase(Locale.US)
+                            val data = entity.optJSONObject("data")
+                            when {
+                                entType == "MEDIA" || entType == "IMAGE" -> {
+                                    val caption = data?.optString("caption").orEmpty().trim()
+                                    val mediaItems = data?.optJSONArray("mediaItems")
+                                    if (mediaItems != null && mediaItems.length() > 0) {
+                                        for (m in 0 until mediaItems.length()) {
+                                            val item = mediaItems.optJSONObject(m) ?: continue
+                                            val mId = item.optString("mediaId").ifBlank { item.optString("media_id") }
+                                            val imgUrl = mediaById[mId].orEmpty()
+                                                .ifBlank { item.optString("url") }
+                                                .trim()
+                                            if (imgUrl.isNotBlank()) {
+                                                blocks.add(
+                                                    ArticleBlock(
+                                                        type = "media",
+                                                        text = caption,
+                                                        imageUrl = imgUrl,
+                                                        caption = caption,
+                                                    )
+                                                )
+                                                addedAtomic = true
+                                            }
+                                        }
+                                    } else {
+                                        val directUrl = data?.optString("url").orEmpty()
+                                            .ifBlank { data?.optString("src").orEmpty() }
+                                            .ifBlank {
+                                                val mid = data?.optString("mediaId").orEmpty()
+                                                    .ifBlank { data?.optString("media_id").orEmpty() }
+                                                mediaById[mid].orEmpty()
+                                            }
+                                            .trim()
+                                        if (directUrl.isNotBlank()) {
+                                            blocks.add(
+                                                ArticleBlock(
+                                                    type = "media",
+                                                    text = caption,
+                                                    imageUrl = directUrl,
+                                                    caption = caption,
+                                                )
+                                            )
+                                            addedAtomic = true
+                                        }
+                                    }
+                                }
+                                entType == "DIVIDER" -> {
+                                    blocks.add(ArticleBlock(type = "divider"))
+                                    addedAtomic = true
+                                }
+                                entType == "MARKDOWN" -> {
+                                    val md = data?.optString("markdown").orEmpty().trim()
+                                    if (md.isNotBlank()) {
+                                        blocks.add(ArticleBlock(type = "code-block", text = md))
+                                        addedAtomic = true
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if (!addedAtomic && text.isNotBlank()) {
+                        blocks.add(ArticleBlock(type = "unstyled", text = text))
+                    }
+                    continue
+                }
+
+                if (text.isBlank()) continue
+                // Attach first LINK entity URL if the block is a standalone link callout
+                var blockLinkUrl = ""
+                val ranges = b.optJSONArray("entityRanges")
+                if (ranges != null && ranges.length() == 1) {
+                    val range = ranges.optJSONObject(0)
+                    val key = range?.opt("key")?.toString()
+                    val entity = key?.let { entityByKey[it] }
+                    if (entity != null && entity.optString("type").equals("LINK", ignoreCase = true)) {
+                        val url = entity.optJSONObject("data")?.optString("url").orEmpty().trim()
+                        if (url.isNotBlank() && range.optInt("length", 0) >= (text.length - 4).coerceAtLeast(1)) {
+                            blockLinkUrl = url
+                        }
+                    }
+                }
+                blocks.add(ArticleBlock(type = type, text = text, linkUrl = blockLinkUrl))
             }
         }
         if (blocks.isEmpty() && plainText.isNotBlank()) {
@@ -540,7 +691,7 @@ object XGraphqlParser {
         if (title.isBlank() && previewText.isBlank() && blocks.isEmpty()) return null
 
         val wordSource = when {
-            blocks.isNotEmpty() -> blocks.joinToString(" ") { it.text }
+            blocks.any { it.text.isNotBlank() } -> blocks.joinToString(" ") { it.text }
             plainText.isNotBlank() -> plainText
             else -> "$title $previewText"
         }
@@ -552,7 +703,7 @@ object XGraphqlParser {
         return XArticle(
             id = restId,
             title = title.ifBlank { previewText.take(80) },
-            previewText = previewText.ifBlank { blocks.firstOrNull()?.text.orEmpty().take(240) },
+            previewText = previewText.ifBlank { blocks.firstOrNull { it.text.isNotBlank() }?.text.orEmpty().take(240) },
             bodyBlocks = blocks,
             coverImageUrl = coverUrl,
             readTimeMinutes = readTimeMinutes,

@@ -25,6 +25,7 @@ import com.example.domain.model.ThreadConversation
 import com.example.domain.model.TrendItem
 import com.example.domain.model.TrendsResult
 import com.example.domain.model.Tweet
+import com.example.domain.model.XArticle
 import com.example.domain.model.XUser
 import com.example.ui.theme.AccentPreset
 import com.example.ui.theme.ThemeMode
@@ -555,9 +556,35 @@ class ActivityViewModel(private val repository: XRepository) : ViewModel() {
 
 // ===================== BOOKMARKS =====================
 
+internal fun computeBookmarkFolders(items: List<Pair<BookmarkEntity, Tweet>>): List<Pair<String, Int>> {
+    if (items.isEmpty()) return emptyList()
+    val counts = LinkedHashMap<String, Int>()
+    for ((entity, _) in items) {
+        val tag = entity.folderTag.trim().ifBlank { "Saved" }
+        counts[tag] = (counts[tag] ?: 0) + 1
+    }
+    return counts.entries
+        .sortedWith(
+            compareBy<Map.Entry<String, Int>>(
+                {
+                    when (it.key) {
+                        "Synced from X" -> 0
+                        "Saved" -> 1
+                        else -> 2
+                    }
+                },
+                { it.key.lowercase() }
+            )
+        )
+        .map { it.key to it.value }
+}
+
 class BookmarksViewModel(private val repository: XRepository) : ViewModel() {
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
+
+    private val _selectedFolder = MutableStateFlow<String?>(null)
+    val selectedFolder: StateFlow<String?> = _selectedFolder.asStateFlow()
 
     private val _isSyncing = MutableStateFlow(false)
     val isSyncing: StateFlow<Boolean> = _isSyncing.asStateFlow()
@@ -573,13 +600,42 @@ class BookmarksViewModel(private val repository: XRepository) : ViewModel() {
     private val _events = MutableSharedFlow<String>(extraBufferCapacity = 4)
     val events: SharedFlow<String> = _events.asSharedFlow()
 
+    private val allBookmarksFlow = repository.observeBookmarks("")
+
+    val totalBookmarkCount: StateFlow<Int> = combine(allBookmarksFlow, _searchQuery) { all, _ -> all.size }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
+
+    val folders: StateFlow<List<Pair<String, Int>>> = combine(allBookmarksFlow, _selectedFolder) { all, _ ->
+        computeBookmarkFolders(all)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
     @OptIn(ExperimentalCoroutinesApi::class)
-    val bookmarks: StateFlow<List<Pair<BookmarkEntity, Tweet>>> = _searchQuery
-        .flatMapLatest { query -> repository.observeBookmarks(query) }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    val bookmarks: StateFlow<List<Pair<BookmarkEntity, Tweet>>> = combine(
+        _searchQuery.flatMapLatest { query -> repository.observeBookmarks(query) },
+        _selectedFolder,
+    ) { items, folder ->
+        val filtered = if (folder.isNullOrBlank()) {
+            items
+        } else {
+            items.filter { it.first.folderTag.equals(folder, ignoreCase = true) }
+        }
+        filtered.sortedByDescending { it.first.savedAtEpochMs }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     fun updateSearch(q: String) {
         _searchQuery.value = q
+    }
+
+    fun selectFolder(folder: String?) {
+        _selectedFolder.value = folder?.takeIf { it.isNotBlank() }
+    }
+
+    fun moveToFolder(tweetId: String, folderTag: String) {
+        val clean = folderTag.trim().ifBlank { "Saved" }
+        viewModelScope.launch {
+            repository.updateBookmarkFolder(tweetId, clean)
+            _events.tryEmit("Moved to $clean")
+        }
     }
 
     fun ensureInitialSync(isSignedIn: Boolean) {
@@ -1004,6 +1060,9 @@ class ProfileViewModel(private val repository: XRepository) : ViewModel() {
     private val _bookmarkFilter = MutableStateFlow("")
     val bookmarkFilter: StateFlow<String> = _bookmarkFilter.asStateFlow()
 
+    private val _selectedBookmarkFolder = MutableStateFlow<String?>(null)
+    val selectedBookmarkFolder: StateFlow<String?> = _selectedBookmarkFolder.asStateFlow()
+
     private val _isSyncingBookmarks = MutableStateFlow(false)
     val isSyncingBookmarks: StateFlow<Boolean> = _isSyncingBookmarks.asStateFlow()
 
@@ -1013,10 +1072,27 @@ class ProfileViewModel(private val repository: XRepository) : ViewModel() {
     private val _hasMoreRemoteBookmarks = MutableStateFlow(true)
     val hasMoreRemoteBookmarks: StateFlow<Boolean> = _hasMoreRemoteBookmarks.asStateFlow()
 
+    private val allBookmarksFlow = repository.bookmarkRepository.observeBookmarks(query = "")
+
+    val totalBookmarksCount: StateFlow<Int> = combine(allBookmarksFlow, _bookmarkFilter) { all, _ -> all.size }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
+
+    val bookmarkFolders: StateFlow<List<Pair<String, Int>>> = combine(allBookmarksFlow, _selectedBookmarkFolder) { all, _ ->
+        computeBookmarkFolders(all)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
     @OptIn(ExperimentalCoroutinesApi::class)
-    val savedBookmarks: StateFlow<List<Pair<BookmarkEntity, Tweet>>> = _bookmarkFilter
-        .flatMapLatest { query -> repository.bookmarkRepository.observeBookmarks(query = query) }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    val savedBookmarks: StateFlow<List<Pair<BookmarkEntity, Tweet>>> = combine(
+        _bookmarkFilter.flatMapLatest { query -> repository.bookmarkRepository.observeBookmarks(query = query) },
+        _selectedBookmarkFolder,
+    ) { items, folder ->
+        val filtered = if (folder.isNullOrBlank()) {
+            items
+        } else {
+            items.filter { it.first.folderTag.equals(folder, ignoreCase = true) }
+        }
+        filtered.sortedByDescending { it.first.savedAtEpochMs }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     private val _events = MutableSharedFlow<String>(extraBufferCapacity = 4)
     val events: SharedFlow<String> = _events.asSharedFlow()
@@ -1055,6 +1131,18 @@ class ProfileViewModel(private val repository: XRepository) : ViewModel() {
 
     fun updateBookmarkFilter(query: String) {
         _bookmarkFilter.value = query
+    }
+
+    fun selectBookmarkFolder(folder: String?) {
+        _selectedBookmarkFolder.value = folder?.takeIf { it.isNotBlank() }
+    }
+
+    fun moveBookmarkToFolder(tweetId: String, folderTag: String) {
+        val clean = folderTag.trim().ifBlank { "Saved" }
+        viewModelScope.launch {
+            repository.updateBookmarkFolder(tweetId, clean)
+            _events.tryEmit("Moved to $clean")
+        }
     }
 
     fun syncBookmarksFromX() {

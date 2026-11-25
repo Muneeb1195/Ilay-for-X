@@ -468,13 +468,21 @@ class PublicFallbackClient(
             if (sec > 0L) sec * 1000L else XGraphqlParser.parseTwitterDate(t.optString("created_at"))
         }
 
+        val fxArticle = t.optJSONObject("article")?.let { articleObj ->
+            XGraphqlParser.parseArticleNode(articleObj, id, author.handle)
+        }
+
         val rawFxText = t.optString("text")
         val matchedUrl = URL_REGEX.find(rawFxText)?.value?.takeIf {
             !it.contains("x.com/") && !it.contains("twitter.com/") && !it.contains("t.co/")
         }
-        val fxLinkPreview = matchedUrl?.let { link ->
-            val dom = runCatching { java.net.URI(link).host?.removePrefix("www.").orEmpty() }.getOrDefault("")
-            LinkPreview(url = link, displayUrl = dom.ifBlank { link }, domain = dom)
+        val fxLinkPreview = if (fxArticle == null) {
+            matchedUrl?.let { link ->
+                val dom = runCatching { java.net.URI(link).host?.removePrefix("www.").orEmpty() }.getOrDefault("")
+                LinkPreview(url = link, displayUrl = dom.ifBlank { link }, domain = dom)
+            }
+        } else {
+            null
         }
         val cleanedFxText = if (matchedUrl != null) rawFxText.replace(matchedUrl, "").trim() else rawFxText
 
@@ -488,6 +496,7 @@ class PublicFallbackClient(
             poll = poll,
             quotedTweet = quoted,
             quotedTweetId = quoted?.id,
+            article = fxArticle,
             linkPreview = fxLinkPreview,
             replyToHandle = t.optString("replying_to").takeIf { it.isNotBlank() && it != "null" },
             replyToTweetId = t.optString("replying_to_status").takeIf { it.isNotBlank() && it != "null" },

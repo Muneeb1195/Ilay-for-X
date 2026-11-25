@@ -64,6 +64,13 @@ sealed interface InAppLinkDestination {
     data class Thread(val tweetId: String, val authorHandle: String) : InAppLinkDestination
 
     @Immutable
+    data class Article(
+        val articleId: String,
+        val authorHandle: String,
+        val rawUrl: String,
+    ) : InAppLinkDestination
+
+    @Immutable
     data class Compose(
         val prefillText: String = "",
         val replyToTweetId: String? = null,
@@ -223,6 +230,24 @@ object IlayLinkRouter {
                         HANDLE_REGEX.matches(it)
                 }.orEmpty()
                 return InAppLinkDestination.Thread(tweetId = candidateId, authorHandle = handleCandidate)
+            }
+        }
+
+        // 1b. Native X Articles: /<handle>/article/<id> or /i/article/<id>
+        val articleIdx = segments.indexOfFirst { it.equals("article", ignoreCase = true) }
+        if (articleIdx >= 0 && articleIdx + 1 < segments.size) {
+            val candidateArticleId = segments[articleIdx + 1].trim()
+            if (candidateArticleId.isNotBlank()) {
+                val handleCandidate = segments.firstOrNull()?.takeIf {
+                    !it.equals("i", ignoreCase = true) &&
+                        !it.equals("web", ignoreCase = true) &&
+                        HANDLE_REGEX.matches(it)
+                }.orEmpty()
+                return InAppLinkDestination.Article(
+                    articleId = candidateArticleId,
+                    authorHandle = handleCandidate,
+                    rawUrl = normalized,
+                )
             }
         }
 
@@ -480,6 +505,7 @@ fun IlayLinkMovementText(
                 is InAppLinkDestination.Profile -> resolvedMentionClick(dest.handle)
                 is InAppLinkDestination.HashtagSearch -> resolvedHashtagClick(dest.query)
                 is InAppLinkDestination.WebPage -> resolvedUrlClick(dest.url)
+                is InAppLinkDestination.Article -> resolvedUrlClick(dest.rawUrl)
                 is InAppLinkDestination.Thread,
                 is InAppLinkDestination.Home,
                 is InAppLinkDestination.Activity,

@@ -286,24 +286,44 @@ class XGraphqlClient(
         }
         if (!cursor.isNullOrBlank()) vars.put("cursor", cursor)
 
-        val gql = executeGraphqlGet(operationName, vars, account, useFastClient = true).map { raw ->
+        var gql = executeGraphqlGet(operationName, vars, account, useFastClient = true).map { raw ->
             XGraphqlParser.parseTimeline(raw, "X GraphQL ($operationName)")
         }
-        if (gql.isSuccess) return gql
+        if (gql.isSuccess && gql.getOrNull()?.tweets.orEmpty().isNotEmpty()) {
+            return gql
+        }
         val gqlErr = gql.exceptionOrNull()
         if (gqlErr is XApiException.RateLimited || gqlErr is XApiException.AuthOrChallengeError) {
             return gql
         }
 
-        // Authenticated REST v1.1 fallback for Posts & Replies when GraphQL hashes/features rotate
+        // If page 1 returned empty or failed for Posts/Replies, try refreshing GraphQL hashes once
+        // before falling back to authenticated REST v1.1 user_timeline.
         if (cursor == null && (operationName == "UserTweets" || operationName == "UserTweetsAndReplies")) {
+            val refreshed = registry.refreshFromRemote(force = false).getOrDefault(0)
+            if (refreshed > 0) {
+                val retryGql = executeGraphqlGet(operationName, vars, account, useFastClient = true).map { raw ->
+                    XGraphqlParser.parseTimeline(raw, "X GraphQL ($operationName)")
+                }
+                if (retryGql.isSuccess && retryGql.getOrNull()?.tweets.orEmpty().isNotEmpty()) {
+                    return retryGql
+                }
+                gql = retryGql
+                val retryErr = retryGql.exceptionOrNull()
+                if (retryErr is XApiException.RateLimited || retryErr is XApiException.AuthOrChallengeError) {
+                    return retryGql
+                }
+            }
+
             val restFallback = fetchUserTimelineRestV1(
                 account = account,
                 userId = userId,
                 includeReplies = operationName == "UserTweetsAndReplies",
                 count = count,
             )
-            if (restFallback.isSuccess) return restFallback
+            if (restFallback.isSuccess && restFallback.getOrNull()?.tweets.orEmpty().isNotEmpty()) {
+                return restFallback
+            }
         }
         return gql
     }
@@ -772,7 +792,7 @@ class XGraphqlClient(
             .put("includePromotedContent", false)
         if (!cursor.isNullOrBlank()) vars.put("cursor", cursor)
         return executeGraphqlGet("Bookmarks", vars, account, useFastClient = true).map { raw ->
-            XGraphqlParser.parseTimeline(raw, "X Synced Bookmarks", sortBySortIndexDesc = true)
+            XGraphqlParser.parseTimeline(raw, "X Synced Bookmarks", sortBySortIndexDesc = false)
         }
     }
 

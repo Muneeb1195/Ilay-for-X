@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -74,6 +75,12 @@ import com.example.ui.theme.VerifiedBlue
 
 private val ARTICLE_PARAGRAPH_REGEX = Regex("\\n{2,}")
 private val ARTICLE_WORD_REGEX = Regex("\\s+")
+
+/**
+ * Returns true if the tweet contains a native X Article or links directly to an `/article/` page.
+ */
+fun Tweet.hasReadableArticle(): Boolean =
+    article != null || linkPreview?.url?.contains("/article/", ignoreCase = true) == true
 
 /**
  * Resolves a Tweet into a displayable XArticle (either native parsed `tweet.article` or a
@@ -698,37 +705,108 @@ fun ArticleReaderSheet(
 }
 
 @Composable
-private fun ArticleRichBlock(
+fun ArticleRichBlock(
     block: ArticleBlock,
     orderedIndex: Int,
+    textScale: Float = 1f,
+    onOpenMedia: ((String) -> Unit)? = null,
+    onOpenUrl: ((String) -> Unit)? = null,
 ) {
+    val safeScale = textScale.coerceIn(0.8f, 1.5f)
     when (block.type) {
+        "media" -> {
+            if (block.imageUrl.isNotBlank()) {
+                val context = LocalContext.current
+                val imageQualityMode = LocalImageQualityMode.current
+                val mediaReq = remember(block.imageUrl, context, imageQualityMode) {
+                    IlayImageCache.cardMediaRequest(
+                        context = context,
+                        rawUrl = block.imageUrl,
+                        compact = false,
+                        mode = imageQualityMode,
+                    )
+                }
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    AsyncImage(
+                        model = mediaReq,
+                        contentDescription = block.caption.ifBlank { "Article image" },
+                        contentScale = ContentScale.FillWidth,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 120.dp, max = 440.dp)
+                            .clip(RoundedCornerShape(18.dp))
+                            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                            .then(
+                                if (onOpenMedia != null) {
+                                    Modifier.clickable { onOpenMedia(block.imageUrl) }
+                                } else {
+                                    Modifier
+                                }
+                            )
+                            .testTag("article_inline_media"),
+                    )
+                    if (block.caption.isNotBlank()) {
+                        Text(
+                            text = block.caption,
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                fontStyle = FontStyle.Italic,
+                                fontSize = (13f * safeScale).sp,
+                                lineHeight = (19f * safeScale).sp,
+                            ),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 4.dp),
+                        )
+                    }
+                }
+            }
+        }
+        "divider" -> {
+            HorizontalDivider(
+                color = MaterialTheme.colorScheme.outlineVariant,
+                modifier = Modifier.padding(vertical = 8.dp),
+            )
+        }
         "header-one" -> Text(
             text = block.text,
-            style = MaterialTheme.typography.headlineSmall,
+            style = MaterialTheme.typography.headlineSmall.copy(
+                fontSize = (24f * safeScale).sp,
+                lineHeight = (31f * safeScale).sp,
+            ),
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.padding(top = 6.dp),
         )
         "header-two" -> Text(
             text = block.text,
-            style = MaterialTheme.typography.titleLarge,
+            style = MaterialTheme.typography.titleLarge.copy(
+                fontSize = (21f * safeScale).sp,
+                lineHeight = (28f * safeScale).sp,
+            ),
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.padding(top = 4.dp),
         )
         "header-three" -> Text(
             text = block.text,
-            style = MaterialTheme.typography.titleMedium,
+            style = MaterialTheme.typography.titleMedium.copy(
+                fontSize = (18f * safeScale).sp,
+                lineHeight = (25f * safeScale).sp,
+            ),
             fontWeight = FontWeight.SemiBold,
             color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.padding(top = 2.dp),
         )
         "blockquote" -> {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(IntrinsicSize.Min)
-                    .clip(RoundedCornerShape(12.dp))
+                    .clip(RoundedCornerShape(14.dp))
                     .background(MaterialTheme.colorScheme.surfaceContainerLow)
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
             ) {
                 Box(
                     modifier = Modifier
@@ -742,7 +820,8 @@ private fun ArticleRichBlock(
                     text = block.text,
                     style = MaterialTheme.typography.bodyLarge.copy(
                         fontStyle = FontStyle.Italic,
-                        lineHeight = 25.sp,
+                        fontSize = (16f * safeScale).sp,
+                        lineHeight = (25f * safeScale).sp,
                     ),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -757,15 +836,19 @@ private fun ArticleRichBlock(
             ) {
                 Text(
                     text = "•",
-                    style = MaterialTheme.typography.bodyLarge,
+                    style = MaterialTheme.typography.bodyLarge.copy(fontSize = (16f * safeScale).sp),
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.width(18.dp),
                 )
-                Text(
+                IlayLinkMovementText(
                     text = block.text,
-                    style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 25.sp),
+                    style = MaterialTheme.typography.bodyLarge.copy(
+                        fontSize = (16f * safeScale).sp,
+                        lineHeight = (26f * safeScale).sp,
+                    ),
                     color = MaterialTheme.colorScheme.onSurface,
+                    onUrlClick = onOpenUrl,
                     modifier = Modifier.weight(1f),
                 )
             }
@@ -779,15 +862,19 @@ private fun ArticleRichBlock(
             ) {
                 Text(
                     text = "${orderedIndex.coerceAtLeast(1)}.",
-                    style = MaterialTheme.typography.bodyLarge,
+                    style = MaterialTheme.typography.bodyLarge.copy(fontSize = (16f * safeScale).sp),
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.width(26.dp),
                 )
-                Text(
+                IlayLinkMovementText(
                     text = block.text,
-                    style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 25.sp),
+                    style = MaterialTheme.typography.bodyLarge.copy(
+                        fontSize = (16f * safeScale).sp,
+                        lineHeight = (26f * safeScale).sp,
+                    ),
                     color = MaterialTheme.colorScheme.onSurface,
+                    onUrlClick = onOpenUrl,
                     modifier = Modifier.weight(1f),
                 )
             }
@@ -803,17 +890,55 @@ private fun ArticleRichBlock(
                     text = block.text,
                     style = MaterialTheme.typography.bodySmall.copy(
                         fontFamily = FontFamily.Monospace,
-                        lineHeight = 20.sp,
+                        fontSize = (13.5f * safeScale).sp,
+                        lineHeight = (21f * safeScale).sp,
                     ),
                     color = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.padding(12.dp),
+                    modifier = Modifier.padding(14.dp),
                 )
             }
         }
-        else -> Text(
-            text = block.text,
-            style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 26.sp),
-            color = MaterialTheme.colorScheme.onSurface,
-        )
+        else -> {
+            if (block.linkUrl.isNotBlank() && block.text == block.linkUrl) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.65f),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable { onOpenUrl?.invoke(block.linkUrl) },
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Outlined.OpenInNew,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Text(
+                            text = FormatUtils.formatDisplayUrl(block.linkUrl),
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            } else if (block.text.isNotBlank()) {
+                IlayLinkMovementText(
+                    text = block.text,
+                    style = MaterialTheme.typography.bodyLarge.copy(
+                        fontSize = (16.5f * safeScale).sp,
+                        lineHeight = (27f * safeScale).sp,
+                    ),
+                    color = MaterialTheme.colorScheme.onSurface,
+                    onUrlClick = onOpenUrl,
+                )
+            }
+        }
     }
 }

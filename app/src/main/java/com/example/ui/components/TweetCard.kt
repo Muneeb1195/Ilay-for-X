@@ -108,6 +108,7 @@ import com.example.domain.model.MediaAttachment
 import com.example.domain.model.MediaType
 import com.example.domain.model.SwipeAction
 import com.example.domain.model.Tweet
+import com.example.domain.model.XArticle
 import com.example.ui.theme.BookmarkAmber
 import com.example.ui.theme.IlayMotion
 import com.example.ui.theme.LikeRose
@@ -138,6 +139,7 @@ data class TweetCardHost(
     val openProfile: (String) -> Unit = {},
     val openHashtag: (String) -> Unit = {},
     val openUrl: (String) -> Unit = {},
+    val openArticle: (Tweet, XArticle) -> Unit = { _, _ -> },
     val capturePostScreenshot: (tweet: Tweet, knownParent: Tweet?, action: ScreenshotCaptureAction) -> Unit = { _, _, _ -> },
     val showMessage: (String) -> Unit = {},
 )
@@ -487,7 +489,6 @@ fun TweetCardContent(
     var showMoreMenu by remember { mutableStateOf(false) }
     var showRepostMenu by remember { mutableStateOf(false) }
     var showShareSheet by remember { mutableStateOf(false) }
-    var showArticleReader by remember(tweet.id) { mutableStateOf(false) }
     var revealSensitive by remember(tweet.id) { mutableStateOf(false) }
     var isTextExpanded by remember(tweet.id) { mutableStateOf(false) }
 
@@ -971,18 +972,24 @@ fun TweetCardContent(
                     )
                 }
 
-                // Native X Article Preview Card
-                tweet.article?.let { article ->
+                // Native X Article Preview Card (also supports /article/ link previews)
+                val hasArticle = remember(tweet.id, tweet.article, tweet.linkPreview) { tweet.hasReadableArticle() }
+                if (hasArticle) {
+                    val resolvedArticle = remember(tweet.id, tweet.article, tweet.linkPreview) {
+                        tweet.resolveArticleOrFallback()
+                    }
                     Spacer(Modifier.height(10.dp))
                     EmbeddedArticlePreviewCard(
-                        article = article,
+                        article = resolvedArticle,
                         compact = isCompact,
-                        onClick = { showArticleReader = true },
+                        onClick = { host.openArticle(tweet, resolvedArticle) },
                     )
                 }
 
-                // Link Preview Card (replaces raw link text with rich preview; skips preview image when tweet has media)
-                tweet.linkPreview?.let { linkPreview ->
+                // Link Preview Card (replaces raw link text with rich preview; skips duplicate /article/ preview)
+                tweet.linkPreview?.takeUnless {
+                    hasArticle && it.url.contains("/article/", ignoreCase = true)
+                }?.let { linkPreview ->
                     Spacer(Modifier.height(10.dp))
                     LinkPreviewCard(
                         preview = linkPreview,
@@ -1126,18 +1133,6 @@ fun TweetCardContent(
             },
             onDismiss = { showShareSheet = false },
         )
-    }
-
-    if (showArticleReader) {
-        tweet.article?.let { article ->
-            ArticleReaderSheet(
-                tweet = tweet,
-                article = article,
-                onOpenThread = onOpenThread,
-                onOpenProfile = onOpenProfile,
-                onDismiss = { showArticleReader = false },
-            )
-        }
     }
 }
 

@@ -76,6 +76,8 @@ import com.example.data.remote.LocalImageQualityMode
 import com.example.domain.model.MediaAttachment
 import com.example.domain.model.QuotedTweet
 import com.example.domain.model.Tweet
+import com.example.domain.model.XArticle
+import com.example.domain.model.XUser
 import com.example.ui.components.FloatingNavItem
 import com.example.ui.components.IlayFloatingBottomBar
 import com.example.ui.components.IlayLinkRouter
@@ -99,6 +101,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import com.example.ui.screens.AccountSwitcherSheet
 import com.example.ui.screens.ActivityScreen
+import com.example.ui.screens.ArticleReaderScreen
 import com.example.ui.screens.BookmarksScreen
 import com.example.ui.screens.ComposerScreen
 import com.example.ui.screens.ExploreScreen
@@ -132,6 +135,7 @@ object NavRoutes {
     const val SETTINGS_CATEGORY = "settings/{category}"
     const val INTEREST_INSPECTOR = "interest_inspector"
     const val THREAD = "thread/{tweetId}/{handle}"
+    const val ARTICLE = "article/{tweetId}/{handle}?articleId={articleId}&url={url}"
     const val USER_PROFILE = "user/{handle}"
     const val COMPOSER = "composer?replyId={replyId}&replyHandle={replyHandle}&quoteId={quoteId}&quoteAuthor={quoteAuthor}&quoteSnippet={quoteSnippet}&prefillText={prefillText}"
 
@@ -140,6 +144,22 @@ object NavRoutes {
 
     fun thread(tweetId: String, handle: String): String =
         "thread/${Uri.encode(tweetId)}/${Uri.encode(handle.ifBlank { "i" })}"
+
+    fun article(
+        tweetId: String,
+        handle: String,
+        articleId: String = "",
+        rawUrl: String = "",
+    ): String {
+        val safeTweetId = tweetId.ifBlank { "article" }
+        val safeHandle = handle.removePrefix("@").ifBlank { "i" }
+        val params = buildList {
+            if (articleId.isNotBlank()) add("articleId=${Uri.encode(articleId)}")
+            if (rawUrl.isNotBlank()) add("url=${Uri.encode(rawUrl)}")
+        }
+        val base = "article/${Uri.encode(safeTweetId)}/${Uri.encode(safeHandle)}"
+        return if (params.isEmpty()) base else "$base?${params.joinToString("&")}"
+    }
 
     fun userProfile(handle: String): String =
         "user/${Uri.encode(handle.removePrefix("@"))}"
@@ -269,6 +289,18 @@ fun IlayAppRoot(
         navController.navigate(NavRoutes.thread(tweet.id, tweet.author.handle))
     }
 
+    fun openArticle(tweet: Tweet, article: XArticle) {
+        repo.seedArticle(tweet, article)
+        navController.navigate(
+            NavRoutes.article(
+                tweetId = tweet.id,
+                handle = tweet.author.handle,
+                articleId = article.id,
+                rawUrl = article.articleUrl,
+            )
+        )
+    }
+
     fun openProfile(handle: String) {
         val clean = handle.trim().removePrefix("@")
         if (clean.isNotBlank()) {
@@ -296,6 +328,18 @@ fun IlayAppRoot(
             is InAppLinkDestination.HashtagSearch -> openHashtag(dest.query)
             is InAppLinkDestination.Thread -> {
                 navController.navigate(NavRoutes.thread(dest.tweetId, dest.authorHandle)) {
+                    launchSingleTop = true
+                }
+            }
+            is InAppLinkDestination.Article -> {
+                navController.navigate(
+                    NavRoutes.article(
+                        tweetId = "",
+                        handle = dest.authorHandle,
+                        articleId = dest.articleId,
+                        rawUrl = dest.rawUrl,
+                    )
+                ) {
                     launchSingleTop = true
                 }
             }
@@ -386,6 +430,7 @@ fun IlayAppRoot(
             openProfile = ::openProfile,
             openHashtag = ::openHashtag,
             openUrl = ::openExternalLink,
+            openArticle = ::openArticle,
             capturePostScreenshot = ::startPostScreenshotCapture,
             showMessage = { msg -> rootScope.launch { snackbarHostState.showSnackbar(msg) } },
         )
@@ -559,6 +604,9 @@ fun IlayAppRoot(
 
                             composable(NavRoutes.BOOKMARKS) {
                                 val bookmarks by bookmarksViewModel.bookmarks.collectAsStateWithLifecycle()
+                                val folders by bookmarksViewModel.folders.collectAsStateWithLifecycle()
+                                val totalBookmarks by bookmarksViewModel.totalBookmarkCount.collectAsStateWithLifecycle()
+                                val selectedFolder by bookmarksViewModel.selectedFolder.collectAsStateWithLifecycle()
                                 val query by bookmarksViewModel.searchQuery.collectAsStateWithLifecycle()
                                 val isSyncing by bookmarksViewModel.isSyncing.collectAsStateWithLifecycle()
                                 val isLoadingMore by bookmarksViewModel.isLoadingMore.collectAsStateWithLifecycle()
@@ -583,6 +631,11 @@ fun IlayAppRoot(
                                     onReply = ::openReply,
                                     onRemoveBookmark = bookmarksViewModel::removeBookmark,
                                     onOpenMedia = { list, idx -> lightboxMedia = list to idx },
+                                    folders = folders,
+                                    totalBookmarkCount = totalBookmarks,
+                                    selectedFolder = selectedFolder,
+                                    onSelectFolder = bookmarksViewModel::selectFolder,
+                                    onMoveToFolder = bookmarksViewModel::moveToFolder,
                                 )
                             }
 
@@ -601,6 +654,9 @@ fun IlayAppRoot(
                                 )
                                 val profileState by profileVm.uiState.collectAsStateWithLifecycle()
                                 val savedBookmarks by profileVm.savedBookmarks.collectAsStateWithLifecycle()
+                                val bookmarkFolders by profileVm.bookmarkFolders.collectAsStateWithLifecycle()
+                                val totalBookmarksCount by profileVm.totalBookmarksCount.collectAsStateWithLifecycle()
+                                val selectedBookmarkFolder by profileVm.selectedBookmarkFolder.collectAsStateWithLifecycle()
                                 val bookmarkFilter by profileVm.bookmarkFilter.collectAsStateWithLifecycle()
                                 val isSyncingBookmarks by profileVm.isSyncingBookmarks.collectAsStateWithLifecycle()
                                 val isLoadingMoreBookmarks by profileVm.isLoadingMoreBookmarks.collectAsStateWithLifecycle()
@@ -636,6 +692,11 @@ fun IlayAppRoot(
                                     onOpenMedia = { list, idx -> lightboxMedia = list to idx },
                                     onRetry = { activeAccount?.let { profileVm.loadSelfProfile(it) } },
                                     savedBookmarks = savedBookmarks,
+                                    bookmarkFolders = bookmarkFolders,
+                                    totalBookmarksCount = totalBookmarksCount,
+                                    selectedBookmarkFolder = selectedBookmarkFolder,
+                                    onSelectBookmarkFolder = profileVm::selectBookmarkFolder,
+                                    onMoveBookmarkToFolder = profileVm::moveBookmarkToFolder,
                                     bookmarkFilter = bookmarkFilter,
                                     onBookmarkFilterChange = profileVm::updateBookmarkFilter,
                                     isSyncingBookmarks = isSyncingBookmarks,
@@ -663,6 +724,9 @@ fun IlayAppRoot(
                                 )
                                 val profileState by profileVm.uiState.collectAsStateWithLifecycle()
                                 val savedBookmarks by profileVm.savedBookmarks.collectAsStateWithLifecycle()
+                                val bookmarkFolders by profileVm.bookmarkFolders.collectAsStateWithLifecycle()
+                                val totalBookmarksCount by profileVm.totalBookmarksCount.collectAsStateWithLifecycle()
+                                val selectedBookmarkFolder by profileVm.selectedBookmarkFolder.collectAsStateWithLifecycle()
                                 val bookmarkFilter by profileVm.bookmarkFilter.collectAsStateWithLifecycle()
                                 val isSyncingBookmarks by profileVm.isSyncingBookmarks.collectAsStateWithLifecycle()
                                 val isLoadingMoreBookmarks by profileVm.isLoadingMoreBookmarks.collectAsStateWithLifecycle()
@@ -698,6 +762,11 @@ fun IlayAppRoot(
                                     onOpenMedia = { list, idx -> lightboxMedia = list to idx },
                                     onRetry = { if (handle.isNotBlank()) profileVm.loadProfile(handle, activeAccount?.handle) },
                                     savedBookmarks = savedBookmarks,
+                                    bookmarkFolders = bookmarkFolders,
+                                    totalBookmarksCount = totalBookmarksCount,
+                                    selectedBookmarkFolder = selectedBookmarkFolder,
+                                    onSelectBookmarkFolder = profileVm::selectBookmarkFolder,
+                                    onMoveBookmarkToFolder = profileVm::moveBookmarkToFolder,
                                     bookmarkFilter = bookmarkFilter,
                                     onBookmarkFilterChange = profileVm::updateBookmarkFilter,
                                     isSyncingBookmarks = isSyncingBookmarks,
@@ -764,6 +833,109 @@ fun IlayAppRoot(
                                     onReplyFull = ::openReply,
                                     onBookmark = threadVm::toggleBookmark,
                                     onOpenMedia = { list, idx -> lightboxMedia = list to idx },
+                                )
+                            }
+
+                            composable(
+                                route = NavRoutes.ARTICLE,
+                                arguments = listOf(
+                                    navArgument("tweetId") { type = NavType.StringType },
+                                    navArgument("handle") { type = NavType.StringType },
+                                    navArgument("articleId") { type = NavType.StringType; nullable = true; defaultValue = "" },
+                                    navArgument("url") { type = NavType.StringType; nullable = true; defaultValue = "" },
+                                ),
+                                enterTransition = {
+                                    fadeIn(tween(220)) + slideInVertically(tween(260)) { it / 14 }
+                                },
+                                popExitTransition = {
+                                    fadeOut(tween(180)) + slideOutVertically(tween(220)) { it / 14 }
+                                },
+                            ) { entry ->
+                                val rawTweetId = entry.arguments?.getString("tweetId").orEmpty()
+                                val tweetId = if (rawTweetId == "article") "" else rawTweetId
+                                val handle = entry.arguments?.getString("handle").orEmpty().let { if (it == "i") "" else it }
+                                val articleId = entry.arguments?.getString("articleId").orEmpty()
+                                val rawUrl = entry.arguments?.getString("url").orEmpty()
+
+                                val initialPair = remember(tweetId, articleId) {
+                                    repo.peekSeededArticle(tweetId)
+                                        ?: repo.peekSeededArticle(articleId)
+                                }
+                                var readerTweet by remember(tweetId, articleId) {
+                                    mutableStateOf(
+                                        initialPair?.first ?: Tweet(
+                                            id = tweetId,
+                                            author = XUser(
+                                                id = handle.ifBlank { "x" },
+                                                handle = handle,
+                                                displayName = handle.ifBlank { "X Article" },
+                                            ),
+                                            text = "",
+                                            createdAtEpochMs = System.currentTimeMillis(),
+                                        )
+                                    )
+                                }
+                                var readerArticle by remember(tweetId, articleId) {
+                                    mutableStateOf(
+                                        initialPair?.second ?: XArticle(
+                                            id = articleId.ifBlank { tweetId },
+                                            title = "Loading Article…",
+                                            articleUrl = rawUrl,
+                                        )
+                                    )
+                                }
+                                var isHydrating by remember(tweetId, articleId) {
+                                    mutableStateOf(readerArticle.bodyBlocks.size < 2)
+                                }
+
+                                LaunchedEffect(tweetId, handle, articleId, rawUrl) {
+                                    isHydrating = true
+                                    repo.loadFullArticle(
+                                        tweetId = tweetId,
+                                        authorHandle = handle,
+                                        articleId = articleId,
+                                        rawUrl = rawUrl,
+                                        fallbackTweet = initialPair?.first,
+                                    ).onSuccess { (hydratedTweet, hydratedArticle) ->
+                                        readerTweet = hydratedTweet
+                                        readerArticle = hydratedArticle
+                                    }
+                                    isHydrating = false
+                                }
+
+                                ArticleReaderScreen(
+                                    tweet = readerTweet,
+                                    article = readerArticle,
+                                    isHydrating = isHydrating,
+                                    onBack = { navController.popBackStack() },
+                                    onOpenProfile = ::openProfile,
+                                    onOpenThread = ::openThread,
+                                    onLike = { target ->
+                                        rootScope.launch {
+                                            repo.toggleLike(target)
+                                                .onSuccess { readerTweet = it }
+                                                .onFailure { err -> snackbarHostState.showSnackbar(err.message ?: "Sign in to like") }
+                                        }
+                                    },
+                                    onRepost = { target ->
+                                        rootScope.launch {
+                                            repo.toggleRepost(target)
+                                                .onSuccess { readerTweet = it }
+                                                .onFailure { err -> snackbarHostState.showSnackbar(err.message ?: "Sign in to repost") }
+                                        }
+                                    },
+                                    onBookmark = { target ->
+                                        rootScope.launch {
+                                            repo.toggleBookmark(target).onSuccess { updated ->
+                                                readerTweet = updated
+                                                snackbarHostState.showSnackbar(
+                                                    if (updated.viewerState.isBookmarked) "Bookmarked" else "Bookmark removed"
+                                                )
+                                            }
+                                        }
+                                    },
+                                    onOpenMedia = { list, idx -> lightboxMedia = list to idx },
+                                    onOpenUrl = ::openExternalLink,
                                 )
                             }
 

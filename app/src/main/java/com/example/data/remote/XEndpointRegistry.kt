@@ -572,7 +572,7 @@ class XEndpointRegistry(
             "UserByScreenName" -> """{"withAuxiliaryUserLabels":false}"""
             "TweetDetail" -> """{"withArticleRichContentState":true,"withArticlePlainText":true,"withGrokAnalyze":false,"withDisallowedReplyControls":false}"""
             "UserArticlesTweets" -> """{"withArticleRichContentState":true,"withArticlePlainText":true}"""
-            "UserTweets", "UserTweetsAndReplies", "UserMedia", "Likes" -> """{"withArticlePlainText":false}"""
+            "UserTweets", "UserTweetsAndReplies", "UserMedia", "Likes" -> """{"withArticlePlainText":true}"""
             else -> null
         }
 

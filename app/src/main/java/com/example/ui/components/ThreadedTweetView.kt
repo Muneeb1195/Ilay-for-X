@@ -928,7 +928,6 @@ private fun FocalTweetCard(
     var showShareSheet by remember { mutableStateOf(false) }
     var showRepostMenu by remember { mutableStateOf(false) }
     var showMoreMenu by remember { mutableStateOf(false) }
-    var showArticleReader by remember(tweet.id) { mutableStateOf(false) }
     var isTranslating by remember(tweet.id) { mutableStateOf(false) }
     var translationResult by remember(tweet.id) { mutableStateOf<TranslationResult?>(null) }
     val canTranslate = remember(tweet.id, tweet.lang, tweet.text) { shouldOfferTranslation(tweet) }
@@ -1107,16 +1106,22 @@ private fun FocalTweetCard(
                     PollCard(tweet = tweet, poll = poll)
                 }
 
-                tweet.article?.let { article ->
+                val hasFocalArticle = remember(tweet.id, tweet.article, tweet.linkPreview) { tweet.hasReadableArticle() }
+                if (hasFocalArticle) {
+                    val resolvedArticle = remember(tweet.id, tweet.article, tweet.linkPreview) {
+                        tweet.resolveArticleOrFallback()
+                    }
                     Spacer(Modifier.height(12.dp))
                     EmbeddedArticlePreviewCard(
-                        article = article,
+                        article = resolvedArticle,
                         compact = false,
-                        onClick = { showArticleReader = true },
+                        onClick = { host.openArticle(tweet, resolvedArticle) },
                     )
                 }
 
-                tweet.linkPreview?.let { linkPreview ->
+                tweet.linkPreview?.takeUnless {
+                    hasFocalArticle && it.url.contains("/article/", ignoreCase = true)
+                }?.let { linkPreview ->
                     Spacer(Modifier.height(12.dp))
                     LinkPreviewCard(
                         preview = linkPreview,
@@ -1287,18 +1292,6 @@ private fun FocalTweetCard(
             },
             onDismiss = { showShareSheet = false },
         )
-    }
-
-    if (showArticleReader) {
-        tweet.article?.let { article ->
-            ArticleReaderSheet(
-                tweet = tweet,
-                article = article,
-                onOpenThread = actions.onOpenThread,
-                onOpenProfile = actions.onOpenProfile,
-                onDismiss = { showArticleReader = false },
-            )
-        }
     }
 }
 

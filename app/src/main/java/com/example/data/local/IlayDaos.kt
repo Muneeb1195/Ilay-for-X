@@ -90,6 +90,9 @@ interface BookmarkDao {
     @Query("SELECT tweetId FROM bookmarks")
     suspend fun getBookmarkedIdsOnce(): List<String>
 
+    @Query("SELECT * FROM bookmarks ORDER BY savedAtEpochMs DESC")
+    suspend fun getAllOnce(): List<BookmarkEntity>
+
     @Query("SELECT textSearchable FROM bookmarks ORDER BY savedAtEpochMs DESC LIMIT 60")
     suspend fun getRecentSearchableTexts(): List<String>
 

@@ -82,17 +82,25 @@ class BookmarkRepository(
         val now = System.currentTimeMillis()
 
         if (!appendOlderPage) {
+            val existingFolderById = bookmarkDao.getAllOnce().associate { it.tweetId to it.folderTag }
             val rows = distinctTweets.mapIndexed { index, t ->
                 val marked = t.copy(viewerState = t.viewerState.copy(isBookmarked = true))
+                val existingFolder = existingFolderById[marked.id]
+                val effectiveFolder = when {
+                    !existingFolder.isNullOrBlank() &&
+                        existingFolder != "Synced from X" &&
+                        existingFolder != "Saved" -> existingFolder
+                    else -> folderTag
+                }
                 BookmarkEntity(
                     tweetId = marked.id,
                     authorHandle = marked.author.handle,
                     authorName = marked.author.displayName,
                     textSearchable = buildSearchableText(marked),
                     tweetJson = tweetAdapter.toJson(marked),
-                    folderTag = folderTag,
+                    folderTag = effectiveFolder,
                     isSyncedWithX = isSyncedWithX,
-                    // Strictly descending timestamps guarantee index 0 (newest) always renders first
+                    // Strictly descending timestamps guarantee index 0 (most recently bookmarked) always renders first
                     savedAtEpochMs = now - (index.toLong() * 1_000L),
                 )
             }
@@ -125,6 +133,12 @@ class BookmarkRepository(
         }
         bookmarkDao.upsertAll(rows)
         rows.size
+    }
+
+    suspend fun updateFolderTag(tweetId: String, folderTag: String) = withContext(Dispatchers.IO) {
+        val clean = folderTag.trim().ifBlank { "Saved" }
+        val existing = bookmarkDao.findById(tweetId) ?: return@withContext
+        bookmarkDao.upsert(existing.copy(folderTag = clean))
     }
 
     /**
@@ -165,6 +179,12 @@ class BookmarkRepository(
 
     private fun buildSearchableText(tweet: Tweet): String = buildString {
         append(tweet.text)
+        tweet.article?.let { art ->
+            append(' ')
+            append(art.title)
+            append(' ')
+            append(art.previewText)
+        }
         tweet.quotedTweet?.let {
             append(' ')
             append(it.text)

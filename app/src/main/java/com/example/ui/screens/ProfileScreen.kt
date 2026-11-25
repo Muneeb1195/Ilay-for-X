@@ -119,8 +119,6 @@ import com.example.domain.model.MediaType
 import com.example.domain.model.ProfileTab
 import com.example.domain.model.SearchTab
 import com.example.domain.model.Tweet
-import com.example.domain.model.XArticle
-import com.example.ui.components.ArticleReaderSheet
 import com.example.ui.components.FormatUtils
 import com.example.ui.components.IlayLinkMovementText
 import com.example.ui.components.LocalTweetCardHost
@@ -166,6 +164,11 @@ fun ProfileScreen(
     onOpenMedia: (List<MediaAttachment>, Int) -> Unit,
     onRetry: () -> Unit = {},
     savedBookmarks: List<Pair<BookmarkEntity, Tweet>> = emptyList(),
+    bookmarkFolders: List<Pair<String, Int>> = emptyList(),
+    totalBookmarksCount: Int = savedBookmarks.size,
+    selectedBookmarkFolder: String? = null,
+    onSelectBookmarkFolder: (String?) -> Unit = {},
+    onMoveBookmarkToFolder: (tweetId: String, folderTag: String) -> Unit = { _, _ -> },
     bookmarkFilter: String = "",
     onBookmarkFilterChange: (String) -> Unit = {},
     isSyncingBookmarks: Boolean = false,
@@ -183,7 +186,8 @@ fun ProfileScreen(
     var showOverflow by remember { mutableStateOf(false) }
     var showBlockConfirmDialog by remember { mutableStateOf(false) }
     var revealBlockedPosts by remember(uiState.user?.handle, uiState.isBlocked) { mutableStateOf(false) }
-    var activeArticleReader by remember { mutableStateOf<Pair<Tweet, XArticle>?>(null) }
+    var organizingBookmark by remember { mutableStateOf<BookmarkEntity?>(null) }
+    val host = LocalTweetCardHost.current
     val haptic = LocalHapticFeedback.current
     val pullRefreshState = rememberPullToRefreshState()
 
@@ -276,15 +280,18 @@ fun ProfileScreen(
 
                 item(key = "guest_bookmarks_header") {
                     OfflineBookmarksHeader(
-                        count = savedBookmarks.size,
+                        count = totalBookmarksCount,
                         filterQuery = bookmarkFilter,
                         onFilterChange = onBookmarkFilterChange,
+                        folders = bookmarkFolders,
+                        selectedFolder = selectedBookmarkFolder,
+                        onSelectFolder = onSelectBookmarkFolder,
                     )
                 }
 
                 if (savedBookmarks.isEmpty()) {
                     item(key = "guest_bookmarks_empty") {
-                        OfflineBookmarksEmptyCard(isFiltered = bookmarkFilter.isNotBlank())
+                        OfflineBookmarksEmptyCard(isFiltered = bookmarkFilter.isNotBlank() || !selectedBookmarkFolder.isNullOrBlank())
                     }
                 } else {
                     items(savedBookmarks, key = { "guest_bm_${it.first.tweetId}" }) { (entity, tweet) ->
@@ -292,6 +299,7 @@ fun ProfileScreen(
                             entity = entity,
                             tweet = tweet,
                             preferences = preferences,
+                            onOrganizeFolder = { organizingBookmark = entity },
                             onOpenThread = onOpenThread,
                             onOpenProfile = onOpenProfile,
                             onLike = onLike,
@@ -725,6 +733,11 @@ fun ProfileScreen(
                                             Text("Blocked")
                                         }
                                     } else {
+                                        val actionPillModifier = Modifier
+                                            .width(112.dp)
+                                            .height(40.dp)
+                                        val actionPillPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp)
+
                                         FilledTonalButton(
                                             onClick = onTogglePinBoost,
                                             shape = CircleShape,
@@ -736,8 +749,8 @@ fun ProfileScreen(
                                             } else {
                                                 ButtonDefaults.filledTonalButtonColors()
                                             },
-                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-                                            modifier = Modifier.testTag("boost_creator_button")
+                                            contentPadding = actionPillPadding,
+                                            modifier = actionPillModifier.testTag("boost_creator_button"),
                                         ) {
                                             Icon(
                                                 if (uiState.isPinnedBoost) Icons.Filled.AutoAwesome else Icons.Outlined.AutoAwesome,
@@ -745,24 +758,44 @@ fun ProfileScreen(
                                                 modifier = Modifier.size(16.dp),
                                             )
                                             Spacer(Modifier.width(4.dp))
-                                            Text(if (uiState.isPinnedBoost) "Boosted" else "Boost", style = MaterialTheme.typography.labelLarge)
+                                            Text(
+                                                text = if (uiState.isPinnedBoost) "Boosted" else "Boost",
+                                                style = MaterialTheme.typography.labelLarge,
+                                                maxLines = 1,
+                                                softWrap = false,
+                                                overflow = TextOverflow.Ellipsis,
+                                            )
                                         }
 
                                         if (user.isFollowing) {
                                             OutlinedButton(
                                                 onClick = onToggleFollow,
                                                 shape = CircleShape,
-                                                modifier = Modifier.testTag("follow_button")
+                                                contentPadding = actionPillPadding,
+                                                modifier = actionPillModifier.testTag("follow_button"),
                                             ) {
-                                                Text("Following")
+                                                Text(
+                                                    text = "Following",
+                                                    style = MaterialTheme.typography.labelLarge,
+                                                    maxLines = 1,
+                                                    softWrap = false,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                )
                                             }
                                         } else {
                                             Button(
                                                 onClick = onToggleFollow,
                                                 shape = CircleShape,
-                                                modifier = Modifier.testTag("follow_button")
+                                                contentPadding = actionPillPadding,
+                                                modifier = actionPillModifier.testTag("follow_button"),
                                             ) {
-                                                Text("Follow")
+                                                Text(
+                                                    text = "Follow",
+                                                    style = MaterialTheme.typography.labelLarge,
+                                                    maxLines = 1,
+                                                    softWrap = false,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                )
                                             }
                                         }
                                     }
@@ -949,8 +982,8 @@ fun ProfileScreen(
                         ) {
                             items(visibleTabs) { tab ->
                                 val selected = uiState.selectedTab == tab
-                                val labelText = if (tab == ProfileTab.BOOKMARKS && savedBookmarks.isNotEmpty()) {
-                                    "${tab.label} (${savedBookmarks.size})"
+                                val labelText = if (tab == ProfileTab.BOOKMARKS && totalBookmarksCount > 0) {
+                                    "${tab.label} ($totalBookmarksCount)"
                                 } else {
                                     tab.label
                                 }
@@ -1055,16 +1088,21 @@ fun ProfileScreen(
                     ProfileTab.BOOKMARKS -> {
                         item(key = "profile_offline_bookmarks_header") {
                             OfflineBookmarksHeader(
-                                count = savedBookmarks.size,
+                                count = totalBookmarksCount,
                                 filterQuery = bookmarkFilter,
                                 onFilterChange = onBookmarkFilterChange,
+                                folders = bookmarkFolders,
+                                selectedFolder = selectedBookmarkFolder,
+                                onSelectFolder = onSelectBookmarkFolder,
                                 isSyncing = isSyncingBookmarks,
                                 onSync = if (activeAccount != null) onSyncBookmarks else null,
                             )
                         }
                         if (savedBookmarks.isEmpty()) {
                             item(key = "profile_offline_bookmarks_empty") {
-                                OfflineBookmarksEmptyCard(isFiltered = bookmarkFilter.isNotBlank())
+                                OfflineBookmarksEmptyCard(
+                                    isFiltered = bookmarkFilter.isNotBlank() || !selectedBookmarkFolder.isNullOrBlank()
+                                )
                             }
                         } else {
                             items(savedBookmarks, key = { "profile_bm_${it.first.tweetId}" }) { (entity, tweet) ->
@@ -1072,6 +1110,7 @@ fun ProfileScreen(
                                     entity = entity,
                                     tweet = tweet,
                                     preferences = preferences,
+                                    onOrganizeFolder = { organizingBookmark = entity },
                                     onOpenThread = onOpenThread,
                                     onOpenProfile = onOpenProfile,
                                     onLike = onLike,
@@ -1082,7 +1121,9 @@ fun ProfileScreen(
                                     onOpenMedia = onOpenMedia,
                                 )
                             }
-                            if (activeAccount != null && bookmarkFilter.isBlank() && (isLoadingMoreBookmarks || hasMoreBookmarks)) {
+                            val allowsPaging = selectedBookmarkFolder == null ||
+                                selectedBookmarkFolder.equals("Synced from X", ignoreCase = true)
+                            if (activeAccount != null && bookmarkFilter.isBlank() && allowsPaging && (isLoadingMoreBookmarks || hasMoreBookmarks)) {
                                 item(key = "profile_bookmarks_load_more") {
                                     Box(
                                         modifier = Modifier
@@ -1159,7 +1200,7 @@ fun ProfileScreen(
                             items(uiState.articles, key = { "art_${it.id}" }) { articleTweet ->
                                 ProfileArticleCard(
                                     tweet = articleTweet,
-                                    onOpenArticle = { t, a -> activeArticleReader = t to a },
+                                    onOpenArticle = { t, a -> host.openArticle(t, a) },
                                     onOpenThread = onOpenThread,
                                     onOpenProfile = onOpenProfile,
                                     onLike = onLike,
@@ -1345,13 +1386,15 @@ fun ProfileScreen(
         }
     }
 
-    activeArticleReader?.let { (articleTweet, article) ->
-        ArticleReaderSheet(
-            tweet = articleTweet,
-            article = article,
-            onOpenThread = onOpenThread,
-            onOpenProfile = onOpenProfile,
-            onDismiss = { activeArticleReader = null },
+    organizingBookmark?.let { entity ->
+        BookmarkFolderPickerDialog(
+            currentFolder = entity.folderTag.ifBlank { "Saved" },
+            existingFolders = bookmarkFolders.map { it.first },
+            onSelectFolder = { newFolder ->
+                onMoveBookmarkToFolder(entity.tweetId, newFolder)
+                organizingBookmark = null
+            },
+            onDismiss = { organizingBookmark = null },
         )
     }
 
@@ -1404,17 +1447,22 @@ private fun OfflineBookmarksHeader(
     count: Int,
     filterQuery: String,
     onFilterChange: (String) -> Unit,
+    folders: List<Pair<String, Int>> = emptyList(),
+    selectedFolder: String? = null,
+    onSelectFolder: (String?) -> Unit = {},
     isSyncing: Boolean = false,
     onSync: (() -> Unit)? = null,
 ) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 14.dp, vertical = 8.dp),
+            .padding(vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -1427,7 +1475,7 @@ private fun OfflineBookmarksHeader(
                 )
                 Spacer(Modifier.width(6.dp))
                 Text(
-                    text = "Offline Bookmarks ($count)",
+                    text = "Bookmarks ($count) · Newest first",
                     style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onSurface,
                 )
@@ -1475,7 +1523,16 @@ private fun OfflineBookmarksHeader(
                 ),
                 modifier = Modifier
                     .fillMaxWidth()
+                    .padding(horizontal = 14.dp)
                     .testTag("profile_bookmarks_filter_input"),
+            )
+        }
+        if (count > 0) {
+            BookmarkFolderTabsRow(
+                folders = folders,
+                totalCount = count,
+                selectedFolder = selectedFolder,
+                onSelectFolder = onSelectFolder,
             )
         }
     }
@@ -1527,6 +1584,7 @@ private fun OfflineBookmarkItem(
     entity: BookmarkEntity,
     tweet: Tweet,
     preferences: AppPreferences,
+    onOrganizeFolder: () -> Unit,
     onOpenThread: (Tweet) -> Unit,
     onOpenProfile: (String) -> Unit,
     onLike: (Tweet) -> Unit,
@@ -1536,20 +1594,29 @@ private fun OfflineBookmarkItem(
     onBookmark: (Tweet) -> Unit,
     onOpenMedia: (List<MediaAttachment>, Int) -> Unit,
 ) {
+    val context = LocalContext.current
+    val savedTime = remember(entity.savedAtEpochMs, context) {
+        FormatUtils.formatDeviceTime(context, entity.savedAtEpochMs)
+    }
     Column {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 2.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                text = entity.folderTag,
+                text = entity.folderTag.ifBlank { "Saved" },
                 style = MaterialTheme.typography.labelSmall,
                 color = BookmarkAmber,
+                modifier = Modifier
+                    .clip(CircleShape)
+                    .clickable(onClick = onOrganizeFolder)
+                    .padding(horizontal = 4.dp, vertical = 2.dp),
             )
             Text(
-                text = "Available offline",
+                text = if (savedTime.isNotBlank()) "Saved $savedTime" else "Available offline",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

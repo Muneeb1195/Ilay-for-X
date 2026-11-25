@@ -182,8 +182,11 @@ data class LinkPreview(
 @Immutable
 @JsonClass(generateAdapter = true)
 data class ArticleBlock(
-    val type: String = "paragraph", // "heading", "subheading", "quote", "bullet", "code", "paragraph"
-    val text: String,
+    val type: String = "paragraph", // "header-one", "header-two", "header-three", "blockquote", "unordered-list-item", "ordered-list-item", "code-block", "media", "divider", "unstyled"
+    val text: String = "",
+    val imageUrl: String = "",
+    val caption: String = "",
+    val linkUrl: String = "",
 )
 
 @Immutable

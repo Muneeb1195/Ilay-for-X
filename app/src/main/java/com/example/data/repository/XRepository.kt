@@ -35,6 +35,7 @@ import com.example.domain.model.TimelinePage
 import com.example.domain.model.TrendsResult
 import com.example.domain.model.Tweet
 import com.example.domain.model.UniversalSearchSuggestions
+import com.example.domain.model.XArticle
 import com.example.domain.model.XUser
 import com.example.domain.ranking.FeedbackUndoToken
 import com.example.domain.ranking.LocalForYouRanker
@@ -110,6 +111,7 @@ class XRepository(
     private val profileTabCache = BoundedTtlCache<String, List<Tweet>>(maxEntries = 40, defaultTtlMs = 60_000L)
     private val threadCache = BoundedTtlCache<String, ThreadConversation>(maxEntries = 60, defaultTtlMs = 90_000L)
     private val seededThreadTweets = BoundedTtlCache<String, Tweet>(maxEntries = 30, defaultTtlMs = 5 * 60_000L)
+    private val seededArticles = BoundedTtlCache<String, Pair<Tweet, XArticle>>(maxEntries = 24, defaultTtlMs = 10 * 60_000L)
     private val translationCache = BoundedTtlCache<String, TranslationResult>(maxEntries = 150, defaultTtlMs = 30 * 60_000L)
     private val notificationsCache = BoundedTtlCache<Boolean, List<NotificationItem>>(maxEntries = 4, defaultTtlMs = 60_000L)
     private val timelineCoalescer = RequestCoalescer<String, Result<TimelinePage>>()
@@ -475,6 +477,159 @@ class XRepository(
     }
 
     fun peekSeededThreadTweet(tweetId: String): Tweet? = seededThreadTweets.get(tweetId)
+
+    fun seedArticle(tweet: Tweet, article: XArticle) {
+        val key = tweet.id.ifBlank { article.id }
+        if (key.isNotBlank()) {
+            seededArticles.put(key, tweet to article)
+        }
+        if (article.id.isNotBlank() && article.id != key) {
+            seededArticles.put(article.id, tweet to article)
+        }
+        if (tweet.id.isNotBlank()) {
+            seededThreadTweets.put(tweet.id, tweet)
+        }
+    }
+
+    fun peekSeededArticle(key: String): Pair<Tweet, XArticle>? =
+        key.takeIf { it.isNotBlank() }?.let { seededArticles.get(it) }
+
+    /**
+     * Hydrates an X Article with full rich body blocks (headings, paragraphs, blockquotes, lists,
+     * code blocks, and inline media) via GraphQL `TweetDetail` (`withArticleRichContentState: true`)
+     * and FxTwitter JSON fallback so readers always get complete in-app article content.
+     */
+    suspend fun loadFullArticle(
+        tweetId: String,
+        authorHandle: String = "",
+        articleId: String = "",
+        rawUrl: String = "",
+        fallbackTweet: Tweet? = null,
+    ): Result<Pair<Tweet, XArticle>> = withContext(Dispatchers.IO) {
+        val cleanTweetId = tweetId.trim().takeIf { it.isNotBlank() && it != "article" }
+        val cleanArticleId = articleId.trim()
+        val cleanHandle = authorHandle.trim().removePrefix("@")
+
+        val seeded = cleanTweetId?.let { seededArticles.get(it) }
+            ?: cleanArticleId.takeIf { it.isNotBlank() }?.let { seededArticles.get(it) }
+        val baseTweet = fallbackTweet
+            ?: seeded?.first
+            ?: cleanTweetId?.let { peekSeededThreadTweet(it) ?: findCachedTweet(it) ?: bookmarkRepository.getBookmarkById(it) }
+        val baseArticle = seeded?.second ?: baseTweet?.article
+
+        val lookupId = cleanTweetId ?: cleanArticleId.takeIf { it.all(Char::isDigit) }
+        val prefs = preferencesFlow.first()
+        val account = db.accountDao().getActiveAccount()
+
+        var hydratedTweet: Tweet? = baseTweet
+        var hydratedArticle: XArticle? = baseArticle
+
+        fun mergeCandidate(candidateTweet: Tweet?) {
+            if (candidateTweet == null) return
+            val existing = hydratedTweet
+            hydratedTweet = if (existing == null) {
+                candidateTweet
+            } else {
+                candidateTweet.copy(
+                    viewerState = candidateTweet.viewerState.copy(
+                        isBookmarked = candidateTweet.viewerState.isBookmarked || existing.viewerState.isBookmarked,
+                        isLiked = candidateTweet.viewerState.isLiked || existing.viewerState.isLiked,
+                        isReposted = candidateTweet.viewerState.isReposted || existing.viewerState.isReposted,
+                    )
+                )
+            }
+            val candidateArticle = candidateTweet.article ?: return
+            val current = hydratedArticle
+            hydratedArticle = if (current == null) {
+                candidateArticle
+            } else {
+                val bestBlocks = when {
+                    candidateArticle.bodyBlocks.size > current.bodyBlocks.size -> candidateArticle.bodyBlocks
+                    current.bodyBlocks.isNotEmpty() -> current.bodyBlocks
+                    else -> candidateArticle.bodyBlocks
+                }
+                current.copy(
+                    id = candidateArticle.id.ifBlank { current.id },
+                    title = candidateArticle.title.ifBlank { current.title },
+                    previewText = candidateArticle.previewText.ifBlank { current.previewText },
+                    coverImageUrl = candidateArticle.coverImageUrl.ifBlank { current.coverImageUrl },
+                    bodyBlocks = bestBlocks,
+                    articleUrl = candidateArticle.articleUrl.ifBlank { current.articleUrl },
+                    publishedAtEpochMs = if (candidateArticle.publishedAtEpochMs > 0L) candidateArticle.publishedAtEpochMs else current.publishedAtEpochMs,
+                    readTimeMinutes = maxOf(candidateArticle.readTimeMinutes, current.readTimeMinutes),
+                )
+            }
+        }
+
+        // 1. Authenticated GraphQL TweetDetail with withArticleRichContentState=true
+        if (!lookupId.isNullOrBlank() && account != null) {
+            val detail = withTimeoutOrNull(6_000L) {
+                graphqlClient.fetchThreadDetail(account, lookupId)
+            }?.getOrNull()
+            mergeCandidate(detail?.focalTweet)
+        }
+
+        // 2. FxTwitter JSON safety net (returns full Draft.js article content + media_entities)
+        val hasRichBlocks = hydratedArticle?.bodyBlocks.orEmpty().size >= 2 ||
+            hydratedArticle?.bodyBlocks.orEmpty().any { it.imageUrl.isNotBlank() }
+        if (!lookupId.isNullOrBlank() && !hasRichBlocks) {
+            val fx = withTimeoutOrNull(6_000L) {
+                publicClient.fetchPublicTweet(
+                    handle = cleanHandle.ifBlank { hydratedTweet?.author?.handle.orEmpty() },
+                    tweetId = lookupId,
+                    customProxyBaseUrl = prefs.customProxyBaseUrl,
+                )
+            }?.getOrNull()
+            mergeCandidate(fx)
+        }
+
+        // 3. If opened from an /article/<articleId> link without a tweetId match, check author's articles
+        if (hydratedArticle == null && cleanHandle.isNotBlank() && cleanArticleId.isNotBlank()) {
+            val authorProfile = loadUserProfile(cleanHandle).getOrNull()
+            if (authorProfile != null) {
+                val userArticles = loadUserArticles(authorProfile).getOrNull().orEmpty()
+                val match = userArticles.firstOrNull { t ->
+                    t.article?.id == cleanArticleId ||
+                        t.id == cleanArticleId ||
+                        t.article?.articleUrl?.contains(cleanArticleId) == true ||
+                        t.linkPreview?.url?.contains(cleanArticleId) == true
+                }
+                mergeCandidate(match)
+            }
+        }
+
+        val finalTweet = hydratedTweet ?: Tweet(
+            id = lookupId.orEmpty(),
+            author = XUser(
+                id = cleanHandle.ifBlank { "x" },
+                handle = cleanHandle.ifBlank { "x" },
+                displayName = cleanHandle.ifBlank { "X Article" },
+            ),
+            text = hydratedArticle?.previewText.orEmpty(),
+            createdAtEpochMs = System.currentTimeMillis(),
+            article = hydratedArticle,
+        )
+        val finalArticle = hydratedArticle ?: finalTweet.article ?: XArticle(
+            id = cleanArticleId.ifBlank { finalTweet.id },
+            title = finalTweet.linkPreview?.title?.takeIf { it.isNotBlank() }
+                ?: finalTweet.text.lineSequence().firstOrNull()?.take(110)?.takeIf { it.isNotBlank() }
+                ?: "X Article",
+            previewText = finalTweet.linkPreview?.description?.takeIf { it.isNotBlank() }
+                ?: finalTweet.text,
+            coverImageUrl = finalTweet.linkPreview?.imageUrl?.takeIf { it.isNotBlank() }
+                ?: finalTweet.media.firstOrNull()?.url.orEmpty(),
+            bodyBlocks = emptyList(),
+            publishedAtEpochMs = finalTweet.createdAtEpochMs,
+            articleUrl = rawUrl.ifBlank {
+                finalTweet.linkPreview?.url?.takeIf { it.isNotBlank() }
+                    ?: if (finalTweet.id.isNotBlank()) "https://x.com/${finalTweet.author.handle}/status/${finalTweet.id}" else "https://x.com"
+            },
+        )
+
+        val resolvedTweet = finalTweet.copy(article = finalArticle)
+        seedArticle(resolvedTweet, finalArticle)
+        Result.success(resolvedTweet to finalArticle)
+    }
 
     fun peekCachedThread(tweetId: String): ThreadConversation? = threadCache.get(tweetId)
 
@@ -858,17 +1013,27 @@ class XRepository(
 
                 val result: Result<List<Tweet>> = if (account != null && effectiveUserId.isNotBlank()) {
                     val gql = graphqlClient.fetchUserTimeline(account, effectiveUserId, operationName)
-                    if (gql.isSuccess) {
-                        gql.map { page -> page.tweets.filterNot { it.id.startsWith("profile_") } }
+                    val gqlTweets = gql.getOrNull()?.tweets
+                        ?.filterNot { it.id.startsWith("profile_") }
+                        .orEmpty()
+                    if (gql.isSuccess && gqlTweets.isNotEmpty()) {
+                        Result.success(gqlTweets)
                     } else if (!isAuthOnlyTab) {
-                        publicClient.fetchPublicTimelineForHandle(
+                        val publicRes = publicClient.fetchPublicTimelineForHandle(
                             handle = user.handle,
                             customProxyBaseUrl = prefs.customProxyBaseUrl,
                             tabPath = nitterTabPath,
                             forceRefresh = forceRefresh,
                         ).map { list -> list.filterNot { it.id.startsWith("profile_") } }
+                        if (publicRes.isSuccess && publicRes.getOrNull().orEmpty().isNotEmpty()) {
+                            publicRes
+                        } else if (gql.isSuccess) {
+                            Result.success(gqlTweets)
+                        } else {
+                            publicRes
+                        }
                     } else {
-                        gql.map { it.tweets }
+                        gql.map { page -> page.tweets.filterNot { it.id.startsWith("profile_") } }
                     }
                 } else if (!isAuthOnlyTab) {
                     publicClient.fetchPublicTimelineForHandle(
@@ -882,9 +1047,11 @@ class XRepository(
                 }
                 if (result.isSuccess) {
                     val tweets = result.getOrNull().orEmpty()
-                    profileTabCache.put(cacheKey, tweets)
-                    if (cacheTab != null) {
-                        cacheTweets(profileTabBucket(user.handle, cacheTab), tweets)
+                    if (tweets.isNotEmpty()) {
+                        profileTabCache.put(cacheKey, tweets)
+                        if (cacheTab != null) {
+                            cacheTweets(profileTabBucket(user.handle, cacheTab), tweets)
+                        }
                     }
                 }
                 result
@@ -931,8 +1098,8 @@ class XRepository(
                     tweet.article != null ||
                         tweet.linkPreview?.url?.contains("/article/", ignoreCase = true) == true
                 }
-                profileTabCache.put(cacheKey, filtered)
                 if (filtered.isNotEmpty()) {
+                    profileTabCache.put(cacheKey, filtered)
                     cacheTweets(bucket, filtered)
                 }
                 Result.success(filtered)
@@ -1075,6 +1242,10 @@ class XRepository(
             }
             Result.success(updated)
         }
+
+    suspend fun updateBookmarkFolder(tweetId: String, folderTag: String) = withContext(Dispatchers.IO) {
+        bookmarkRepository.updateFolderTag(tweetId, folderTag)
+    }
 
     suspend fun loadTweetQuotes(
         tweetId: String,
